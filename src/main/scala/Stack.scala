@@ -37,6 +37,8 @@ case class Stack
     (name, (s: String) => println(
       ("%s %0$" + pad + "s |\033[0m %s").format(color, name, s)))
   }
+  private def promiseMap[T] =
+    defs.map { case (name, _) => (name, Promise[T]()) }
 
   def down(tb: Client)
    (implicit ec: ExecutionContext): Future[List[(String, Future[Unit])]] = {
@@ -67,7 +69,7 @@ case class Stack
 
   def up(tb: Client)
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
-    val promises = defs.map { case (name, _) => (name, Promise[String]()) }
+    val promises = promiseMap[String]
     def make(svc: (String, Service.Def)): Unit = svc match {
       case (name, df) =>
         val log = loggers(name)
