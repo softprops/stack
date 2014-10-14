@@ -44,7 +44,27 @@ case class Stack
   private def promiseMap[T] =
     defs.map { case (name, _) => (name, Promise[T]()) }
 
-  def down(tb: Client)
+  def logs
+   (tb: Client)
+   (implicit ec: ExecutionContext) = {
+    tb.containers.list().map {
+      case xs =>
+        val running = xs.filter(_.names.nonEmpty).filter { c =>
+          c.names.exists( n => names.contains(n.drop(1)))
+        }
+        runnings.foreach { c =>
+          val log = loggers(c.names.head.drop(1))
+          tb.containers.get(c.id)
+            .logs.stdout(true).stderr(true).timestamps(true)
+            .follow.stream { str =>
+              log(str)
+            }
+        }
+    }
+  }
+
+  def down
+   (tb: Client)
    (implicit ec: ExecutionContext): Future[List[(String, Future[Unit])]] = {
     tb.containers.list.all().map {
       case xs =>
@@ -71,7 +91,8 @@ case class Stack
     }
   }
 
-  def up(tb: Client)
+  def up
+   (tb: Client)
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
     val promises = promiseMap[String]
     def make(svc: (String, Service.Def)): Unit = svc match {
