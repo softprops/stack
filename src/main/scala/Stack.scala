@@ -9,7 +9,12 @@ import scala.concurrent.{ ExecutionContext, Future, Promise }
 import scala.util.{ Success, Failure }
 
 object Stack {
-  def fromUrl(url: URL): Either[String, Stack] =
+  val DefaultName =
+    new File(System.getProperty("user.dir")).getName
+
+  def fromUrl
+   (tb: Client, name: String = DefaultName)
+   (url: URL): Either[String, Stack] =
     parseOpt(io.Source.fromURL(url).getLines.mkString)
       .map { js =>
         (for {
@@ -19,23 +24,26 @@ object Stack {
           df                              <- Service.Def.fromJson(svc)
         } yield (name, df)).toMap
       } match {
-        case Some(defs) => Right(Stack(defs))
+        case Some(defs) =>
+          Right(Stack(name, defs, tb))
         case _ => Left("failed to load stack")
       }
 
-  def fromFile(path: String): Either[String, Stack] = 
-    fromUrl(new File(path).toURL)
+  def fromFile
+   (tb: Client, name: String = DefaultName)
+   (path: String): Either[String, Stack] =
+    fromUrl(tb, name)(new File(path).toURL)
 }
 
 case class Stack
- (defs: Map[String, Service.Def]) {
-  private[this] val names = defs.keySet
+ (name: String, defs: Map[String, Service.Def], tb: Client) {
+  private[this] val names = defs.keySet.map(sname => s"${name}_$sname")
   private[this] val colors = Color.wheel
   private[this] val loggers = {
     val pad = defs.keys.map(_.size).max
     defs.map { case (name, _) =>
       val color = colors.next
-      (name, (s: String) => System.out.sycnronized {
+      (name, (s: String) => System.out.synchronized {
         println(
           ("%s %0$" + pad + "s |\033[0m %s").format(color, name, s))
       })
@@ -44,19 +52,21 @@ case class Stack
   private def promiseMap[T] =
     defs.map { case (name, _) => (name, Promise[T]()) }
 
+  private def svcName(sname: String) =
+    sname.replaceFirst(s"${name}_", "")
+
   def logs
-   (tb: Client)
    (implicit ec: ExecutionContext) = {
     tb.containers.list().map {
       case xs =>
         val running = xs.filter(_.names.nonEmpty).filter { c =>
           c.names.exists( n => names.contains(n.drop(1)))
         }
-        runnings.foreach { c =>
-          val log = loggers(c.names.head.drop(1))
+        running.foreach { c =>
+          val log = loggers(svcName(c.names.head.drop(1)))
           tb.containers.get(c.id)
             .logs.stdout(true).stderr(true).timestamps(true)
-            .follow.stream { str =>
+            .follow(true).stream { str =>
               log(str)
             }
         }
@@ -64,7 +74,6 @@ case class Stack
   }
 
   def down
-   (tb: Client)
    (implicit ec: ExecutionContext): Future[List[(String, Future[Unit])]] = {
     tb.containers.list.all().map {
       case xs =>
@@ -72,7 +81,8 @@ case class Stack
           c.names.exists( n => names.contains(n.drop(1)))
         }
         running.map { c =>
-          val log = loggers(c.names.head.drop(1))
+          val name = svcName(c.names.head.drop(1))
+          val log = loggers(name)
           val proxy = tb.containers.get(c.id)
           def del = {
             log("deleting")
@@ -86,51 +96,55 @@ case class Stack
               }
             }
           takedown.foreach { case _ => log("deleted container") }
-          (c.names.head, takedown)
+          (name, takedown)
         }
     }
   }
 
   def up
-   (tb: Client)
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
     val promises = promiseMap[String]
     def make(svc: (String, Service.Def)): Unit = svc match {
-      case (name, df) =>
-        val log = loggers(name)
+      case (sname, df) =>
+        val log = loggers(sname)
+        val promise = promises(sname)
         log(s"creating container named $name from image ${df.image}")
-        tb.containers.create(df.image).name(name)().onComplete {
-          case Success(resp) =>
-            log(s"starting container ${resp.id}")
-            tb.containers.get(resp.id).start().onComplete {
-              case Success(_) =>
-                log(s"started container ${resp.id}")
-                promises(name).success(resp.id)
-              case Failure(f2) =>
-                log(s"failed to start container ${resp.id}: $f2")
-                promises(name).failure(f2)
-            }
-          case Failure(Client.Error(404, _)) =>
-            log(s"Unable to find image '${df.image}' locally")
-            tb.images.pull(df.image).stream {
-              case Pull.Status(msg) => log(msg)
-              case Pull.Progress(msg, _, details) =>
-                log(msg)
-                details.foreach { dets =>
-                  log(dets.bar)
+        tb.containers.create(df.image).name(s"${name}_$sname")()
+          .onComplete {
+            case Success(resp) =>
+              log(s"starting container ${resp.id}")
+              tb.containers.get(resp.id).start()
+                .onComplete {
+                  case Success(_) =>
+                    log(s"started container ${resp.id}")
+                    promise.success(resp.id)
+                  case Failure(f2) =>
+                    log(s"failed to start container ${resp.id}: $f2")
+                    promise.failure(f2)
                 }
-              case Pull.Error(msg, _) => log(msg)
-            }.map {
-              case _ =>
-                log("done making")
-                make(name, df)
-            }
-          case Failure(f) =>
-            log(s"failed to create container from image ${df.image}: ${f.getMessage}")
-            promises(name).failure(f)
-        }
-    }
-    defs.map(make)
-    promises.map { case (name, p) => (name, p.future) }
-  }
+            case Failure(Client.Error(404, _)) =>
+              log(s"Unable to find image '${df.image}' locally")
+              tb.images.pull(df.image).stream {
+                case Pull.Status(msg) =>
+                  log(msg)
+                case Pull.Progress(msg, _, details) =>
+                  log(msg)
+                  details.foreach { dets =>
+                    log(dets.bar)
+                  }
+                case Pull.Error(msg, _) =>
+                  log(msg)
+              }.map {
+                case _ =>
+                  log("done making")
+                  make(name, df)
+              }
+            case Failure(f) =>
+              log(s"failed to create container from image ${df.image}: ${f.getMessage}")
+              promise.failure(f)
+          }
+      }
+     defs.map(make)
+     promises.map { case (sname, p) => (sname, p.future) }
+   }
 }
