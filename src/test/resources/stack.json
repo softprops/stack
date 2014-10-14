@@ -1,5 +1,15 @@
 {
- "app": {
-     "image": "dockerfile/java"
+  "services": {
+    "app": {
+      "image": "dockerfile/java",
+      "cmd": "java -version",
+      "env": {
+        "foo":"bar",
+        "baz":null
+      }
+    },
+    "redis": {
+      "image": "redis"
+    }
   }
 }
