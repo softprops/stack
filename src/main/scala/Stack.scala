@@ -31,11 +31,15 @@ case class Stack
  (defs: Map[String, Service.Def]) {
   private[this] val names = defs.keySet
   private[this] val colors = Color.wheel
-  private[this] val pad = defs.keys.map(_.size).max
-  private[this] val loggers = defs.map { case (name, _) =>
-    val color = colors.next
-    (name, (s: String) => println(
-      ("%s %0$" + pad + "s |\033[0m %s").format(color, name, s)))
+  private[this] val loggers = {
+    val pad = defs.keys.map(_.size).max
+    defs.map { case (name, _) =>
+      val color = colors.next
+      (name, (s: String) => System.out.sycnronized {
+        println(
+          ("%s %0$" + pad + "s |\033[0m %s").format(color, name, s))
+      })
+    }
   }
   private def promiseMap[T] =
     defs.map { case (name, _) => (name, Promise[T]()) }
@@ -88,13 +92,13 @@ case class Stack
           case Failure(Client.Error(404, _)) =>
             log(s"Unable to find image '${df.image}' locally")
             tb.images.pull(df.image).stream {
-              case Pull.Status(msg) => println(msg)
+              case Pull.Status(msg) => log(msg)
               case Pull.Progress(msg, _, details) =>
                 log(msg)
                 details.foreach { dets =>
                   log(dets.bar)
                 }
-              case Pull.Error(msg, _) =>  println(msg)
+              case Pull.Error(msg, _) => log(msg)
             }.map {
               case _ =>
                 log("done making")
