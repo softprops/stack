@@ -1,5 +1,5 @@
 # stack
 
-a vessel for stacking [docker](https://www.docker.com/) docker containers
+a vessel for stacking [docker](https://www.docker.com/) containers
 
-Doug Tangren (softprops) 2013
+Doug Tangren (softprops) 2014
