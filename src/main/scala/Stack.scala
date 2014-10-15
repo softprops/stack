@@ -140,7 +140,7 @@ case class Stack
         tb.containers.create(df.image).name(s"${name}_$sname")()
           .onComplete {
             case Success(resp) =>
-              log.println(s"starting container ${resp.id}")
+              log.println(s"starting container")
               tb.containers.get(resp.id).start()
                 .onComplete {
                   case Success(_) =>
