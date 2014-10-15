@@ -39,27 +39,8 @@ case class Stack
  (name: String, defs: Map[String, Service.Def], tb: Client) {
   /** set of target container names */
   private[this] val names = defs.keySet.map(sname => s"${name}_$sname")
-  trait Logger {
-    def print(str: String)
-    def println(string: String)
-  }
-  private[this] val loggers: Map[String, Logger] = {
-    val colors = Color.wheel
-    val pad = defs.keys.map(_.size).max
-    defs.map { case (name, _) =>
-      val color = colors.next
-      (name, new Logger {
-        def println(msg: String) = System.out.synchronized {
-          System.out.println(
-            ("%s %0$" + pad + "s |\033[0m %s").format(color, name, msg))
-        }
-        def print(msg: String) = System.out.synchronized {
-          System.out.print(
-            ("\r\033[2K%s %0$" + pad + "s |\033[0m %s").format(color, name, msg))
-        }
-      })
-    }
-  }
+  
+  private[this] val loggers: Map[String, Logger] = Logger.named(defs.keySet)
 
   private def promiseMap[T] =
     defs.map { case (name, _) => (name, Promise[T]()) }
