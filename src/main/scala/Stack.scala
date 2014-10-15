@@ -67,6 +67,7 @@ case class Stack
   private def svcName(sname: String) =
     sname.replaceFirst(s"${name}_", "")
 
+  /** streams the logs for stacked services */
   def logs
    (implicit ec: ExecutionContext): Future[Unit] = {
     tb.containers.list().map {
@@ -85,6 +86,7 @@ case class Stack
     }
   }
 
+  /** stops and deletes any containers for stacked services */
   def down
    (implicit ec: ExecutionContext): Map[String, Future[Unit]] = {
     val promises = promiseMap[Unit]
@@ -129,6 +131,7 @@ case class Stack
     }
   }
 
+  /** builds and starts containers for stacked services */
   def up
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
     val promises = promiseMap[String]
