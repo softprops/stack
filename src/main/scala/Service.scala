@@ -50,6 +50,8 @@ object Service {
       )
     }).headOption
   }
+
+  /** A description of a service */
   case class Def(
     image: String,
     cmd: Option[String]      = None,
