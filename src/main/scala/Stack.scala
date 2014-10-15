@@ -151,7 +151,6 @@ case class Stack
                     promise.failure(f2)
                 }
             case Failure(Client.Error(404, _)) =>
-              /* https://github.com/docker/docker/blob/487a417d9fd074d0e78876072c7d1ebfd398ea7a/utils/progressreader.go */
               log.println(s"Unable to find image '${df.image}' locally")
               tb.images.pull(df.image).stream {
                 case el @ Pull.Status(msg) =>
