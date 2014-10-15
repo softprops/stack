@@ -37,18 +37,30 @@ object Stack {
 
 case class Stack
  (name: String, defs: Map[String, Service.Def], tb: Client) {
+  /** set of target container names */
   private[this] val names = defs.keySet.map(sname => s"${name}_$sname")
-  private[this] val colors = Color.wheel
-  private[this] val loggers = {
+  trait Logger {
+    def print(str: String)
+    def println(string: String)
+  }
+  private[this] val loggers: Map[String, Logger] = {
+    val colors = Color.wheel
     val pad = defs.keys.map(_.size).max
     defs.map { case (name, _) =>
       val color = colors.next
-      (name, (s: String) => System.out.synchronized {
-        println(
-          ("%s %0$" + pad + "s |\033[0m %s").format(color, name, s))
+      (name, new Logger {
+        def println(msg: String) = System.out.synchronized {
+          System.out.println(
+            ("%s %0$" + pad + "s |\033[0m %s").format(color, name, msg))
+        }
+        def print(msg: String) = System.out.synchronized {
+          System.out.print(
+            ("\r\033[2K%s %0$" + pad + "s |\033[0m %s").format(color, name, msg))
+        }
       })
     }
   }
+
   private def promiseMap[T] =
     defs.map { case (name, _) => (name, Promise[T]()) }
 
@@ -56,7 +68,7 @@ case class Stack
     sname.replaceFirst(s"${name}_", "")
 
   def logs
-   (implicit ec: ExecutionContext) = {
+   (implicit ec: ExecutionContext): Future[Unit] = {
     tb.containers.list().map {
       case xs =>
         val running = xs.filter(_.names.nonEmpty).filter { c =>
@@ -67,37 +79,53 @@ case class Stack
           tb.containers.get(c.id)
             .logs.stdout(true).stderr(true).timestamps(true)
             .follow(true).stream { str =>
-              log(str)
+              log.println(str)
             }
         }
     }
   }
 
   def down
-   (implicit ec: ExecutionContext): Future[List[(String, Future[Unit])]] = {
+   (implicit ec: ExecutionContext): Map[String, Future[Unit]] = {
+    val promises = promiseMap[Unit]
     tb.containers.list.all().map {
       case xs =>
         val running = xs.filter(_.names.nonEmpty).filter { c =>
           c.names.exists( n => names.contains(n.drop(1)))
         }
+        // satisfy all service promises not running
+        val runningNames = running.map( c => svcName(c.names.head.drop(1)) )
+        promises.filterNot { case (name, _) => runningNames.contains(name) }.foreach {
+          case (_, promise) => promise.success(())
+        }
+        // shutdown service containers
         running.map { c =>
           val name = svcName(c.names.head.drop(1))
           val log = loggers(name)
-          val proxy = tb.containers.get(c.id)
+          val promise = promises(name)
+          val proxy = tb.containers.get(c.id)          
           def del = {
-            log("deleting")
+            log.println("deleting container")
             proxy.delete()
           }
           val takedown =
             if (c.status.startsWith("Exited")) del else {
-              log("stopping")
+              log.println("stopping container")
               proxy.stop()().flatMap {
                 case _ => del
               }
             }
-          takedown.foreach { case _ => log("deleted container") }
-          (name, takedown)
+          takedown.onComplete {
+            case Success(_) =>
+              log.println("deleted container")
+              promise.success(())
+            case Failure(e) =>
+              promise.failure(e)
+          }
         }
+    }
+    promises.map { case (sname, promise) =>
+      (sname, promise.future)
     }
   }
 
@@ -108,43 +136,47 @@ case class Stack
       case (sname, df) =>
         val log = loggers(sname)
         val promise = promises(sname)
-        log(s"creating container named $name from image ${df.image}")
+        log.println(s"creating container image ${df.image}")
         tb.containers.create(df.image).name(s"${name}_$sname")()
           .onComplete {
             case Success(resp) =>
-              log(s"starting container ${resp.id}")
+              log.println(s"starting container ${resp.id}")
               tb.containers.get(resp.id).start()
                 .onComplete {
                   case Success(_) =>
-                    log(s"started container ${resp.id}")
+                    log.println(s"started container ${resp.id}")
                     promise.success(resp.id)
                   case Failure(f2) =>
-                    log(s"failed to start container ${resp.id}: $f2")
+                    log.println(s"failed to start container ${resp.id}: $f2")
                     promise.failure(f2)
                 }
             case Failure(Client.Error(404, _)) =>
-              log(s"Unable to find image '${df.image}' locally")
+              /* https://github.com/docker/docker/blob/487a417d9fd074d0e78876072c7d1ebfd398ea7a/utils/progressreader.go */
+              log.println(s"Unable to find image '${df.image}' locally")
               tb.images.pull(df.image).stream {
-                case Pull.Status(msg) =>
-                  log(msg)
-                case Pull.Progress(msg, _, details) =>
-                  log(msg)
+                case el @ Pull.Status(msg) =>
+                  log.println(msg)
+                case el @ Pull.Progress(msg, id, details) =>
+                  if (msg.startsWith("Download complete")) System.out.println()
+                  if (!msg.startsWith("Downloading")) log.println(s"$id : $msg")
                   details.foreach { dets =>
-                    log(dets.bar)
+                    log.print(s"$id : $msg ${dets.bar}")
                   }
-                case Pull.Error(msg, _) =>
-                  log(msg)
+                case el @ Pull.Error(msg, _) =>
+                  log.println(msg)
               }.map {
                 case _ =>
-                  log("done making")
-                  make(name, df)
+                  log.println("done making")
+                  make(svc)
               }
             case Failure(f) =>
-              log(s"failed to create container from image ${df.image}: ${f.getMessage}")
+              log.println(s"failed to create container from image ${df.image}: ${f.getMessage}")
               promise.failure(f)
           }
       }
      defs.map(make)
-     promises.map { case (sname, p) => (sname, p.future) }
+     promises.map { case (sname, promise) =>
+       (sname, promise.future)
+     }
    }
 }

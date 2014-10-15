@@ -11,9 +11,9 @@ class StackSpec extends FunSpec {
       val tb = tugboat.Client()
       Stack.fromUrl(tb)(getClass().getResource("/stack.json")) match {
         case Right(stack) =>
-          println(stack)
-          Await.ready(stack.down, Duration.Inf)
+          Await.ready(Future.sequence(stack.down.values), Duration.Inf)
           Await.ready(Future.sequence(stack.up.values), Duration.Inf)
+          stack.logs
         case Left(failed) =>
           fail(failed)
       }
