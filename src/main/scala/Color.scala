@@ -1,7 +1,7 @@
 package stack
 
-object Color {
-  private[this] val colors = "\033[0;32m" :: "\033[0;33m" :: "\033[0;34m" :: "\033[0;35m" :: "\033[0;36m" ::  Nil
+private[stack] object Color {
+  private[this] val colors = (91 to 96).map( i => s"\033[0;${i}m")
   def wheel = new Iterator[String] {
     private[this] def newIterator = util.Random.shuffle(colors).iterator
     @volatile private[this] var it = newIterator
