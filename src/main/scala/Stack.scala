@@ -67,6 +67,20 @@ case class Stack
   private def svcName(sname: String) =
     sname.replaceFirst(s"${name}_", "")
 
+  /** list running stacked services */
+  def ps
+   (implicit ec: ExecutionContext): Future[Unit] = {
+     tb.containers.list().map {
+       case xs =>
+         val running = xs.filter(_.names.nonEmpty).filter { c =>
+          c.names.exists( n => names.contains(n.drop(1)))
+        }
+        running.foreach { c =>
+          println(s"${svcName(c.names.head.drop(1))} ${c.id} ${c.image} ${c.status} ${c.ports.mkString(", ")}")
+        }
+     }
+   }
+
   /** streams the logs for stacked services */
   def logs
    (implicit ec: ExecutionContext): Future[Unit] = {
@@ -78,7 +92,7 @@ case class Stack
         running.foreach { c =>
           val log = loggers(svcName(c.names.head.drop(1)))
           tb.containers.get(c.id)
-            .logs.stdout(true).stderr(true).timestamps(true)
+            .logs.stdout(true).stderr(true)
             .follow(true).stream { str =>
               log.println(str)
             }
