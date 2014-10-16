@@ -8,8 +8,8 @@ import scala.concurrent.duration._
 class StackSpec extends FunSpec {
   describe("stack") {
     it ("should parse config files") {
-      val tb = tugboat.Client()
-      Stack.fromUrl(tb)(getClass().getResource("/stack.json")) match {
+      val docker = tugboat.Docker()
+      Stack.fromUrl(docker)(getClass().getResource("/stack.json")) match {
         case Right(stack) =>
           Await.ready(Future.sequence(stack.down.values), Duration.Inf)
           Await.ready(Future.sequence(stack.up.values), Duration.Inf)
@@ -17,7 +17,7 @@ class StackSpec extends FunSpec {
         case Left(failed) =>
           fail(failed)
       }
-      tb.close()
+      docker.close()
     }
   }
 }

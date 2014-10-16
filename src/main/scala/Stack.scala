@@ -1,6 +1,6 @@
 package stack
 
-import tugboat.{ Client, Pull }
+import tugboat.{ Docker, Pull }
 import org.json4s._
 import org.json4s.native.JsonMethods._
 import java.net.URL
@@ -13,7 +13,7 @@ object Stack {
     new File(System.getProperty("user.dir")).getName
 
   def fromUrl
-   (tb: Client, name: String = DefaultName)
+   (docker: Docker, name: String = DefaultName)
    (url: URL): Either[String, Stack] =
     parseOpt(io.Source.fromURL(url).getLines.mkString)
       .map { js =>
@@ -25,18 +25,18 @@ object Stack {
         } yield (name, df)).toMap
       } match {
         case Some(defs) =>
-          Right(Stack(name, defs, tb))
+          Right(Stack(name, defs, docker))
         case _ => Left("failed to load stack")
       }
 
   def fromFile
-   (tb: Client, name: String = DefaultName)
+   (docker: Docker, name: String = DefaultName)
    (path: String): Either[String, Stack] =
-    fromUrl(tb, name)(new File(path).toURL)
+    fromUrl(docker, name)(new File(path).toURL)
 }
 
 case class Stack
- (name: String, defs: Map[String, Service.Def], tb: Client) {
+ (name: String, defs: Map[String, Service.Def], docker: Docker) {
   /** set of target container names */
   private[this] val names = defs.keySet.map(sname => s"${name}_$sname")
   
@@ -51,7 +51,7 @@ case class Stack
   /** list running stacked services */
   def ps
    (implicit ec: ExecutionContext): Future[Unit] = {
-     tb.containers.list().map {
+     docker.containers.list().map {
        case xs =>
          val running = xs.filter(_.names.nonEmpty).filter { c =>
           c.names.exists( n => names.contains(n.drop(1)))
@@ -65,14 +65,14 @@ case class Stack
   /** streams the logs for stacked services */
   def logs
    (implicit ec: ExecutionContext): Future[Unit] = {
-    tb.containers.list().map {
+    docker.containers.list().map {
       case xs =>
         val running = xs.filter(_.names.nonEmpty).filter { c =>
           c.names.exists( n => names.contains(n.drop(1)))
         }
         running.foreach { c =>
           val log = loggers(svcName(c.names.head.drop(1)))
-          tb.containers.get(c.id)
+          docker.containers.get(c.id)
             .logs.stdout(true).stderr(true)
             .follow(true).stream { str =>
               log.println(str)
@@ -85,7 +85,7 @@ case class Stack
   def down
    (implicit ec: ExecutionContext): Map[String, Future[Unit]] = {
     val promises = promiseMap[Unit]
-    tb.containers.list.all().map {
+    docker.containers.list.all().map {
       case xs =>
         val running = xs.filter(_.names.nonEmpty).filter { c =>
           c.names.exists( n => names.contains(n.drop(1)))
@@ -100,7 +100,7 @@ case class Stack
           val name = svcName(c.names.head.drop(1))
           val log = loggers(name)
           val promise = promises(name)
-          val proxy = tb.containers.get(c.id)          
+          val proxy = docker.containers.get(c.id)
           def del = {
             log.println("deleting container")
             proxy.delete()
@@ -130,16 +130,16 @@ case class Stack
   def up
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
     val promises = promiseMap[String]
-    def make(svc: (String, Service.Def)): Unit = svc match {
+    def sup(svc: (String, Service.Def)): Unit = svc match {
       case (sname, df) =>
         val log = loggers(sname)
         val promise = promises(sname)
         log.println(s"creating container image ${df.image}")
-        tb.containers.create(df.image).name(s"${name}_$sname")()
+        docker.containers.create(df.image).name(s"${name}_$sname")()
           .onComplete {
             case Success(resp) =>
               log.println(s"starting container")
-              tb.containers.get(resp.id).start()
+              docker.containers.get(resp.id).start()
                 .onComplete {
                   case Success(_) =>
                     log.println(s"started container ${resp.id}")
@@ -148,30 +148,30 @@ case class Stack
                     log.println(s"failed to start container ${resp.id}: $f2")
                     promise.failure(f2)
                 }
-            case Failure(Client.Error(404, _)) =>
+            case Failure(Docker.Error(404, _)) =>
               log.println(s"Unable to find image '${df.image}' locally")
-              tb.images.pull(df.image).stream {
-                case el @ Pull.Status(msg) =>
+              docker.images.pull(df.image).stream {
+                case Pull.Status(msg) =>
                   log.println(msg)
-                case el @ Pull.Progress(msg, id, details) =>
+                case Pull.Progress(msg, id, details) =>
                   if (msg.startsWith("Download complete")) System.out.println()
                   if (!msg.startsWith("Downloading")) log.println(s"$id : $msg")
                   details.foreach { dets =>
                     log.print(s"$id : $msg ${dets.bar}")
                   }
-                case el @ Pull.Error(msg, _) =>
+                case Pull.Error(msg, _) =>
                   log.println(msg)
               }.map {
                 case _ =>
                   log.println("done making")
-                  make(svc)
+                  sup(svc)
               }
             case Failure(f) =>
               log.println(s"failed to create container from image ${df.image}: ${f.getMessage}")
               promise.failure(f)
           }
       }
-     defs.map(make)
+     defs.map(sup)
      promises.map { case (sname, promise) =>
        (sname, promise.future)
      }
