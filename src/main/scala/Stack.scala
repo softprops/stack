@@ -126,6 +126,40 @@ case class Stack
     }
   }
 
+  def pull
+   (implicit ec: ExecutionContext): Map[String, Future[String]] = {
+    val promises = promiseMap[String]
+    def pullit(svc: (String, Service.Def)): Unit = svc match {
+      case (sname, df) =>
+        val log = loggers(sname)
+        val promise = promises(sname)
+        log.println(s"pulling $sname")
+        val (_, complete) = docker.images.pull(df.image).stream {
+          case Pull.Status(msg) =>
+            log.println(msg)
+          case Pull.Progress(msg, id, details) =>
+            if (msg.startsWith("Download complete")) System.out.println()
+            if (!msg.startsWith("Downloading")) log.println(s"$id : $msg")
+            details.foreach { dets =>
+              log.print(s"$id : $msg ${dets.bar}")
+            }
+          case Pull.Error(msg, _) =>
+            log.println(msg)
+        }
+        complete.onComplete {
+          case Success(_) =>
+            log.println(s"pulled $sname")
+            promise.success(sname)
+          case Failure(e) =>
+            promise.failure(e)
+        }
+    }
+    defs.map(pullit)
+    promises.map { case (sname, promise) =>
+      (sname, promise.future)
+    }
+  }
+
   /** builds and starts containers for stacked services */
   def up
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
