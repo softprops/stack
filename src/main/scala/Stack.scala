@@ -85,7 +85,7 @@ case class Stack
   def down
    (implicit ec: ExecutionContext): Map[String, Future[Unit]] = {
     val promises = promiseMap[Unit]
-    docker.containers.list.all().map {
+    docker.containers.list().map {
       case xs =>
         val running = xs.filter(_.names.nonEmpty).filter { c =>
           c.names.exists( n => names.contains(n.drop(1)))
@@ -150,7 +150,7 @@ case class Stack
                 }
             case Failure(Docker.Error(404, _)) =>
               log.println(s"Unable to find image '${df.image}' locally")
-              docker.images.pull(df.image).stream {
+              val (_, complete) = docker.images.pull(df.image).stream {
                 case Pull.Status(msg) =>
                   log.println(msg)
                 case Pull.Progress(msg, id, details) =>
@@ -161,7 +161,8 @@ case class Stack
                   }
                 case Pull.Error(msg, _) =>
                   log.println(msg)
-              }.map {
+              }
+              complete.map {
                 case _ =>
                   log.println("done making")
                   sup(svc)
