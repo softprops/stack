@@ -1,5 +1,6 @@
 {
-  "services": {
+  "name": "test stack",
+  "containers": {
     "app": {
       "image": "dockerfile/java:oracle-java7",
       "cmd": "java -version",

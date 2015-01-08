@@ -12,31 +12,31 @@ object Stack {
   val DefaultName =
     new File(System.getProperty("user.dir")).getName
 
-  def fromUrl
+  def url
    (docker: Docker, name: String = DefaultName)
-   (url: URL): Either[String, Stack] =
-    parseOpt(io.Source.fromURL(url).getLines.mkString)
+   (resource: URL): Either[String, Stack] =
+    parseOpt(io.Source.fromURL(resource).getLines.mkString)
       .map { js =>
         (for {
           JObject(stack) <- js
-          ("services", JObject(services)) <- stack
-          (name, svc)                     <- services
-          df                              <- Service.Def.fromJson(svc)
+          ("containers", JObject(containers)) <- stack
+          (name, svc)                         <- containers
+          df                                  <- Container.Def.fromJson(svc)
         } yield (name, df)).toMap
       } match {
         case Some(defs) =>
           Right(Stack(name, defs, docker))
-        case _ => Left("failed to load stack")
+        case _ => Left(s"failed to load stack from $resource")
       }
 
-  def fromFile
+  def file
    (docker: Docker, name: String = DefaultName)
    (path: String): Either[String, Stack] =
-    fromUrl(docker, name)(new File(path).toURL)
+    url(docker, name)(new File(path).toURL)
 }
 
 case class Stack
- (name: String, defs: Map[String, Service.Def], docker: Docker) {
+ (name: String, defs: Map[String, Container.Def], docker: Docker) {
   /** set of target container names */
   private[this] val names = defs.keySet.map(sname => s"${name}_$sname")
   
@@ -45,10 +45,10 @@ case class Stack
   private def promiseMap[T] =
     defs.map { case (name, _) => (name, Promise[T]()) }
 
-  private def svcName(sname: String) =
-    sname.replaceFirst(s"${name}_", "")
+  private def containerName(cname: String) =
+    cname.replaceFirst(s"${name}_", "")
 
-  /** list running stacked services */
+  /** list running stacked container */
   def ps
    (implicit ec: ExecutionContext): Future[Unit] = {
      docker.containers.list().map {
@@ -57,12 +57,12 @@ case class Stack
           c.names.exists( n => names.contains(n.drop(1)))
         }
         running.foreach { c =>
-          println(s"${svcName(c.names.head.drop(1))} ${c.id} ${c.image} ${c.status} ${c.ports.mkString(", ")}")
+          println(s"${containerName(c.names.head.drop(1))} ${c.id} ${c.image} ${c.status} ${c.ports.mkString(", ")}")
         }
      }
    }
 
-  /** streams the logs for stacked services */
+  /** streams the logs for stacked containers */
   def logs
    (implicit ec: ExecutionContext): Future[Unit] = {
     docker.containers.list().map {
@@ -71,7 +71,7 @@ case class Stack
           c.names.exists( n => names.contains(n.drop(1)))
         }
         running.foreach { c =>
-          val log = loggers(svcName(c.names.head.drop(1)))
+          val log = loggers(containerName(c.names.head.drop(1)))
           docker.containers.get(c.id)
             .logs.stdout(true).stderr(true)
             .follow(true).stream { str =>
@@ -81,7 +81,7 @@ case class Stack
     }
   }
 
-  /** stops and deletes any containers for stacked services */
+  /** stops and deletes any containers for stacked container */
   def down
    (implicit ec: ExecutionContext): Map[String, Future[Unit]] = {
     val promises = promiseMap[Unit]
@@ -90,14 +90,14 @@ case class Stack
         val running = xs.filter(_.names.nonEmpty).filter { c =>
           c.names.exists( n => names.contains(n.drop(1)))
         }
-        // satisfy all service promises not running
-        val runningNames = running.map( c => svcName(c.names.head.drop(1)) )
+        // satisfy all container promises not running
+        val runningNames = running.map( c => containerName(c.names.head.drop(1)) )
         promises.filterNot { case (name, _) => runningNames.contains(name) }.foreach {
           case (_, promise) => promise.success(())
         }
-        // shutdown service containers
+        // shutdown containers
         running.map { c =>
-          val name = svcName(c.names.head.drop(1))
+          val name = containerName(c.names.head.drop(1))
           val log = loggers(name)
           val promise = promises(name)
           val proxy = docker.containers.get(c.id)
@@ -129,7 +129,7 @@ case class Stack
   def pull
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
     val promises = promiseMap[String]
-    def pullit(svc: (String, Service.Def)): Unit = svc match {
+    def pullit(svc: (String, Container.Def)): Unit = svc match {
       case (sname, df) =>
         val log = loggers(sname)
         val promise = promises(sname)
@@ -160,16 +160,16 @@ case class Stack
     }
   }
 
-  /** builds and starts containers for stacked services */
+  /** builds and starts containers for stacked container */
   def up
    (implicit ec: ExecutionContext): Map[String, Future[String]] = {
     val promises = promiseMap[String]
-    def sup(svc: (String, Service.Def)): Unit = svc match {
-      case (sname, df) =>
-        val log = loggers(sname)
-        val promise = promises(sname)
+    def cup(container: (String, Container.Def)): Unit = container match {
+      case (cname, df) =>
+        val log = loggers(cname)
+        val promise = promises(cname)
         log.println(s"creating container image ${df.image}")
-        docker.containers.create(df.image).name(s"${name}_$sname")()
+        docker.containers.create(df.image).name(s"${name}_$cname")()
           .onComplete {
             case Success(resp) =>
               log.println(s"starting container")
@@ -199,16 +199,16 @@ case class Stack
               complete.map {
                 case _ =>
                   log.println("done making")
-                  sup(svc)
+                  cup(container)
               }
             case Failure(f) =>
               log.println(s"failed to create container from image ${df.image}: ${f.getMessage}")
               promise.failure(f)
           }
       }
-     defs.map(sup)
-     promises.map { case (sname, promise) =>
-       (sname, promise.future)
+     defs.map(cup)
+     promises.map { case (cname, promise) =>
+       (cname, promise.future)
      }
    }
 }
